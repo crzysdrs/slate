@@ -1,20 +1,15 @@
 mod qr;
 use embedded_graphics::{
-    geometry::Size, prelude::*, primitives::Line, primitives::PrimitiveStyle,
-    primitives::PrimitiveStyleBuilder, primitives::Rectangle,
+    geometry::Size, prelude::*, primitives::PrimitiveStyleBuilder, primitives::Rectangle,
 };
+use embedded_hal::prelude::*;
 use epd_waveshare::color::OctColor;
 use epd_waveshare::graphics::OctDisplay;
 use epd_waveshare::{epd5in65f::*, prelude::*};
-
-#[cfg(feature = "spi")]
-use embedded_hal::blocking::delay::DelayMs;
 use image;
-#[cfg(feature = "spi")]
-use rppal::gpio::Gpio;
 
 mod octimage;
-use octimage::{OctColorMap, OctDither};
+use octimage::OctDither;
 use std::io::Result as IOResult;
 
 use std::io::Read;
@@ -30,6 +25,20 @@ static COLORS: [OctColor; 8] = [
     OctColor::Blue,
     OctColor::Yellow,
 ];
+
+cfg_if::cfg_if! {
+    if #[cfg(feature="spi")] {
+        mod eink;
+        use eink as display;
+    } else if #[cfg(feature="sim")] {
+        mod sim;
+        use sim as display;
+    } else {
+        compile_error!("Wrong feature");
+    }
+}
+
+use display::create;
 
 use gb;
 
@@ -165,9 +174,8 @@ where
         use embedded_graphics::{
             mono_font::iso_8859_16::FONT_10X20,
             mono_font::MonoTextStyle,
-            pixelcolor::Rgb565,
             prelude::*,
-            text::{Text, TextStyle, TextStyleBuilder},
+            text::{Text, TextStyleBuilder},
         };
 
         let character_style = MonoTextStyle::new(&FONT_10X20, OctColor::White);
@@ -188,248 +196,6 @@ where
         .expect("Wrote Text");
     }
     // Display updated frame
-}
-
-#[cfg(feature = "sim")]
-use embedded_graphics_simulator::{
-    BinaryColorTheme, OutputSettingsBuilder, SimulatorDisplay, Window,
-};
-
-use embedded_hal::{
-    blocking::{delay::*, spi::Write},
-    digital::v2::{InputPin, OutputPin},
-};
-
-#[cfg(feature = "sim")]
-use embedded_hal_mock::{delay::*, pin::Mock as PinMock, spi::Mock as SpiMock};
-
-use std::sync::mpsc;
-use std::thread;
-
-struct OctSimDisplay {
-    child: thread::JoinHandle<()>,
-    tx: mpsc::Sender<WindowMessage>,
-    color: OctColor,
-}
-
-enum WindowMessage {
-    Update(Vec<u8>),
-    Refresh,
-    Shutdown,
-}
-
-#[cfg(feature = "sim")]
-impl<SPI, CS, BUSY, DC, RST, DELAY> WaveshareDisplay<SPI, CS, BUSY, DC, RST, DELAY>
-    for OctSimDisplay
-where
-    SPI: Write<u8>,
-    CS: OutputPin,
-    BUSY: InputPin,
-    DC: OutputPin,
-    RST: OutputPin,
-    DELAY: DelayMs<u8>,
-{
-    type DisplayColor = OctColor;
-    fn new(
-        _spi: &mut SPI,
-        _cs: CS,
-        _busy: BUSY,
-        _dc: DC,
-        _rst: RST,
-        _delay: &mut DELAY,
-    ) -> Result<Self, SPI::Error> {
-        let (tx, rx) = mpsc::channel();
-
-        let child = std::thread::spawn(move || {
-            use embedded_graphics_simulator::{
-                BinaryColorTheme, OutputSettingsBuilder, SimulatorDisplay, SimulatorEvent, Window,
-            };
-            let output_settings = OutputSettingsBuilder::new()
-                //.theme(BinaryColorTheme::OledBlue)
-                .build();
-            let mut window = Window::new("Simulator", &output_settings);
-
-            let mut display = SimulatorDisplay::<OctColor>::new(Size {
-                width: WIDTH,
-                height: HEIGHT,
-            });
-
-            window.update(&display);
-            'running: loop {
-                while let Ok(msg) = rx.try_recv() {
-                    match msg {
-                        WindowMessage::Refresh => window.update(&display),
-                        WindowMessage::Shutdown => {
-                            break 'running;
-                        }
-                        WindowMessage::Update(v) => {
-                            use embedded_graphics::{
-                                image::{Image, ImageRaw},
-                                pixelcolor::BinaryColor,
-                                prelude::*,
-                            };
-
-                            let image =
-                                embedded_graphics::image::ImageRaw::<OctColor>::new(&v, WIDTH);
-                            let image = Image::new(&image, Point::zero());
-                            image.draw(&mut display).unwrap();
-                            window.update(&display);
-                        }
-                    }
-                    /* do message */
-                }
-
-                for event in window.events() {
-                    match event {
-                        SimulatorEvent::MouseButtonUp { point, .. } => {
-                            println!("Click event at ({}, {})", point.x, point.y);
-                        }
-                        SimulatorEvent::Quit => break 'running,
-                        _ => {}
-                    }
-
-                    std::thread::sleep(std::time::Duration::from_millis(200));
-                }
-            }
-        });
-        Ok(Self {
-            child,
-            tx,
-            color: OctColor::White,
-        })
-    }
-
-    fn wake_up(&mut self, _spi: &mut SPI, _delay: &mut DELAY) -> Result<(), SPI::Error> {
-        Ok(())
-    }
-
-    fn sleep(&mut self, _spi: &mut SPI, _delay: &mut DELAY) -> Result<(), SPI::Error> {
-        std::thread::sleep(std::time::Duration::from_millis(1000));
-        Ok(())
-    }
-
-    fn update_frame(
-        &mut self,
-        _spi: &mut SPI,
-        buffer: &[u8],
-        _delay: &mut DELAY,
-    ) -> Result<(), SPI::Error> {
-        self.tx
-            .send(WindowMessage::Update(buffer.to_vec()))
-            .unwrap();
-        Ok(())
-    }
-
-    fn update_partial_frame(
-        &mut self,
-        _spi: &mut SPI,
-        _buffer: &[u8],
-        _x: u32,
-        _y: u32,
-        _width: u32,
-        _height: u32,
-    ) -> Result<(), SPI::Error> {
-        unimplemented!();
-    }
-
-    fn display_frame(&mut self, _spi: &mut SPI, _delay: &mut DELAY) -> Result<(), SPI::Error> {
-        self.tx.send(WindowMessage::Refresh).unwrap();
-        Ok(())
-    }
-
-    fn update_and_display_frame(
-        &mut self,
-        spi: &mut SPI,
-        buffer: &[u8],
-        delay: &mut DELAY,
-    ) -> Result<(), SPI::Error> {
-        /* why is rust requiring me to specify the full type parameter version of these calls ? */
-        WaveshareDisplay::<SPI, CS, BUSY, DC, RST, DELAY>::update_frame(self, spi, buffer, delay)?;
-        WaveshareDisplay::<SPI, CS, BUSY, DC, RST, DELAY>::display_frame(self, spi, delay)
-    }
-
-    fn clear_frame(&mut self, _spi: &mut SPI, _delay: &mut DELAY) -> Result<(), SPI::Error> {
-        Ok(())
-    }
-
-    fn set_background_color(&mut self, color: OctColor) {
-        self.color = color;
-    }
-
-    fn background_color(&self) -> &OctColor {
-        &self.color
-    }
-
-    fn width(&self) -> u32 {
-        WIDTH
-    }
-
-    fn height(&self) -> u32 {
-        HEIGHT
-    }
-
-    fn set_lut(
-        &mut self,
-        _spi: &mut SPI,
-        _refresh_rate: Option<RefreshLut>,
-    ) -> Result<(), SPI::Error> {
-        unimplemented!();
-    }
-
-    fn is_busy(&self) -> bool {
-        false
-    }
-}
-
-cfg_if::cfg_if! {
-    if #[cfg(feature="spi")] {
-        fn create() -> (rppal::spi::Spi, rppal::hal::Delay,
-                        impl WaveshareDisplay<rppal::spi::Spi, rppal::gpio::OutputPin, rppal::gpio::InputPin, rppal::gpio::OutputPin, rppal::gpio::OutputPin, rppal::hal::Delay, DisplayColor=OctColor>) {
-            // DIN    ->    10(SPI0_MOSI)
-            // CLK    ->    11(SPI0_SCK)
-            // CS     ->    8(SPI0_CS0)
-            // DC     ->    25
-            // RST    ->    17
-            // BUSY   ->    24
-            let mut spi = rppal::spi::Spi::new(
-                rppal::spi::Bus::Spi0,
-                rppal::spi::SlaveSelect::Ss0,
-                /*clock speed */ 4_000_000,
-                rppal::spi::Mode::Mode0,
-            )
-                .expect("spi failure");
-            let gpio = Gpio::new().expect("gpio failure");
-            let cs_pin = gpio.get(8).expect("failed to get pin").into_output();
-            let busy_in = gpio.get(24).expect("failed to get pin").into_input();
-            let dc = gpio.get(25).expect("failed to get pin").into_output();
-            let rst = gpio.get(17).expect("failed to get pin").into_output();
-            let mut delay = rppal::hal::Delay::new();
-
-            let disp = Epd5in65f::new(&mut spi, cs_pin, busy_in, dc, rst, &mut delay).map_err(|_| ()).unwrap();
-            (spi, delay, disp)
-        }
-
-    } else if #[cfg(feature="sim")] {
-        fn create() ->
-            (SpiMock,
-             StdSleep,
-             impl WaveshareDisplay<SpiMock, PinMock, PinMock, PinMock, PinMock, embedded_hal_mock::delay::StdSleep, DisplayColor=OctColor>
-            )
-
-        {
-              let mut spi = SpiMock::new(&[]);
-              let cs_pin = PinMock::new(&[]);
-              let busy_in = PinMock::new(&[]);
-              let dc = PinMock::new(&[]);
-              let rst = PinMock::new(&[]);
-              let mut delay = embedded_hal_mock::delay::StdSleep::new();
-              let disp = OctSimDisplay::new(&mut spi, cs_pin, busy_in, dc, rst, &mut delay).map_err(|_| ()).unwrap();
-              (spi, delay, disp)
-          }
-
-    } else {
-        compile_error!("Wrong feature");
-    }
 }
 
 #[derive(Deserialize)]
@@ -624,10 +390,7 @@ fn place(
 ) -> ImageBuffer<image::Rgb<u8>, Vec<u8>> {
     use image::io::Reader as ImageReader;
     use image::DynamicImage;
-    use image::GenericImage;
     use imageproc::geometric_transformations::*;
-    use std::convert::TryFrom;
-    use std::f32::consts::PI;
     let mut gb = ImageReader::open(&img.path)
         .unwrap()
         .decode()

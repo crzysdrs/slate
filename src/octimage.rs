@@ -5,6 +5,15 @@ use epd_waveshare::prelude::*;
 use image;
 use std::convert::TryInto;
 
+pub trait OctSubpixel:
+    image::Primitive + std::cmp::Ord + std::iter::Sum + TryInto<u32> + 'static
+{
+}
+
+impl OctSubpixel for u8 {}
+impl OctSubpixel for u16 {}
+impl OctSubpixel for u32 {}
+
 #[derive(Clone)]
 pub struct OctColorMap<T> {
     pub colors: Vec<(OctColor, T)>,
@@ -42,29 +51,38 @@ where
     }
 }
 
-pub struct OctDither<P, C>(image::ImageBuffer<P, C>, OctColorMap<P>, Point)
+pub struct OctDither<P, C>
 where
-    P: image::Pixel;
+    P: image::Pixel,
+{
+    buffer: image::ImageBuffer<P, C>,
+    map: OctColorMap<P>,
+    top_left: Point,
+}
 
 impl OctDither<image::Rgb<u8>, Vec<u8>> {
     pub fn new(img: image::DynamicImage, map: OctColorMap<image::Rgb<u8>>, pt: Point) -> Self {
         let mut rgb = img.into_rgb8();
         image::imageops::colorops::dither(&mut rgb, &map);
-        OctDither(rgb, map, pt)
+        OctDither {
+            buffer: rgb,
+            map,
+            top_left: pt,
+        }
     }
 
     pub fn iter(
         &self,
     ) -> embedded_graphics::iterator::contiguous::IntoPixels<DitherIter<image::Rgb<u8>>> {
         DitherIter {
-            iter: self.0.pixels(),
-            map: &self.1,
+            iter: self.buffer.pixels(),
+            map: &self.map,
         }
         .into_pixels(&embedded_graphics::primitives::rectangle::Rectangle {
-            top_left: self.2,
+            top_left: self.top_left,
             size: Size {
-                height: self.0.height(),
-                width: self.0.width(),
+                height: self.buffer.height(),
+                width: self.buffer.width(),
             },
         })
     }
@@ -119,100 +137,3 @@ impl OctDither<image::Rgb<u8>, Vec<u8>> {
         Self::new(img, map, pt)
     }
 }
-
-// impl <P, C>embedded_graphics::image::ImageDimensions for OctDither<P, C>
-// where P: image::Pixel + 'static,
-//     C: std::ops::Deref<Target=[P::Subpixel]>
-// {
-//     fn width(&self) -> u32 {
-//         self.0.width()
-//     }
-//     fn height(&self) -> u32 {
-//         self.0.height()
-//     }
-// }
-
-// pub struct PixelIter<'a, P>
-// where
-//     P: image::Pixel,
-// {
-//     iter: image::buffer::EnumeratePixels<'a, P>,
-//     map: &'a OctColorMap<P>,
-// }
-
-pub trait OctSubpixel:
-    image::Primitive + std::cmp::Ord + std::iter::Sum + TryInto<u32> + 'static
-{
-}
-
-// impl<'a, P> Iterator for PixelIter<'a, P>
-// where
-//     P: image::Pixel,
-//     <P as image::Pixel>::Subpixel: OctSubpixel,
-// {
-//     type Item = Pixel<OctColor>;
-
-//     fn next(&mut self) -> Option<Self::Item> {
-//         use image::imageops::colorops::ColorMap;
-//         self.iter.next().map(|(x, y, p)| {
-//             Pixel(
-//                 Point::new(x as i32, y as i32),
-//                 self.map.colors[self.map.index_of(&p)].0,
-//             )
-//         })
-//     }
-// }
-
-impl OctSubpixel for u8 {}
-impl OctSubpixel for u16 {}
-impl OctSubpixel for u32 {}
-
-// impl<'a, P, C> embedded_graphics::image::IntoPixelIter<OctColor> for &'a OctDither<P, C>
-// where P : image::Pixel + 'static,
-//       P::Subpixel: OctSubpixel,
-//       C: std::ops::Deref<Target=[P::Subpixel]>
-// {
-//     type PixelIterator = PixelIter<'a, P>;
-//     fn pixel_iter(self) -> Self::PixelIterator {
-//         PixelIter {
-//             iter: self.0.enumerate_pixels(),
-//             map: &self.1,
-//         }
-//     }
-// }
-
-// impl<P, Continaer> ImageDrawable for &OctDither<P, Container> {
-//     type Color = P;
-//     fn draw<D>(&self, target: &mut D) -> Result<(), <D as DrawTarget>::Error>
-//     where
-//         D: DrawTarget<Color = Self::Color> {
-//         target.fill_contiguous(
-//             &self.bounding_box(),
-
-//         )
-//     }
-//     fn draw_sub_image<D>(
-//         &self,
-//         target: &mut D,
-//         area: &Rectangle
-//     ) -> Result<(), <D as DrawTarget>::Error>
-//     where
-//         D: DrawTarget<Color = Self::Color>;
-// }
-
-// impl <P, Container> Drawable for &OctDither<P, Container>
-// where
-// //P: image::Pixel + 'static + PixelColor,
-//     P: image::Pixel + PixelColor,
-//       // P::Subpixel: OctSubpixel,
-//       // Container: std::ops::Deref<Target=[P::Subpixel]>
-// {
-//     type Color=P;
-//     type Output=();
-//     fn draw<D: DrawTarget<Color=P>>(&self, display: &mut D) -> Result<Self::Output, D::Error> {
-//         //let image = embedded_graphics::image::ImageRaw::new(&self.2);
-//         //image.draw(display)?;
-//         self.draw(display)?;
-//         Ok(())
-//     }
-// }
