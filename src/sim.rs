@@ -1,5 +1,6 @@
 use embedded_graphics::prelude::*;
 use embedded_hal::{
+    blocking::delay::*,
     blocking::spi::Write,
     digital::v2::{InputPin, OutputPin},
 };
