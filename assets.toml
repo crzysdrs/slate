@@ -1,0 +1,42 @@
+[[romdata]]
+boxart = "/home/crzysdrs/gbdata/Nintendo - Game Boy Color/Named_Boxarts"
+roms = "/home/crzysdrs/roms/cgb"
+
+[[romdata]]
+boxart = "/home/crzysdrs/gbdata/Nintendo - Game Boy/Named_Boxarts"
+roms = "/home/crzysdrs/roms/gb"
+
+[[gameboy]]
+color = false
+path = "/home/crzysdrs/gbdata/gb_images/gb.png"
+screen = [[468,228], [752,310], [645,590], [365,495]]
+
+
+[[gameboy]]
+color = true
+path = "/home/crzysdrs/gbdata/gb_images/gbc purple.png"
+screen = [[241,159], [612,192], [615,555], [247,576]]
+
+[[gameboy]]
+color = true
+path = "/home/crzysdrs/gbdata/gb_images/gbc red.png"
+screen = [[241,159], [612,192], [615,555], [247,576]]
+
+[[gameboy]]
+color = true
+path = "/home/crzysdrs/gbdata/gb_images/gbc lime.png"
+screen = [[241,159], [612,192], [615,555], [247,576]]
+[[gameboy]]
+color = true
+path = "/home/crzysdrs/gbdata/gb_images/gbc yellow.png"
+screen = [[241,159], [612,192], [615,555], [247,576]]
+
+[[gameboy]]
+color = true
+path = "/home/crzysdrs/gbdata/gb_images/gbc blue.png"
+screen = [[241,159], [612,192], [615,555], [247,576]]
+
+[[gameboy]]
+color = true
+path = "/home/crzysdrs/gbdata/gb_images/gbc clear.png"
+screen = [[1239,597], [2292,917], [1992,1994], [957,1596]]
