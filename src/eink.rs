@@ -16,24 +16,25 @@ pub fn create() -> (
         DisplayColor = OctColor,
     >,
 ) {
-    // DIN    ->    10(SPI0_MOSI)
-    // CLK    ->    11(SPI0_SCK)
-    // CS     ->    8(SPI0_CS0)
-    // DC     ->    25
-    // RST    ->    17
-    // BUSY   ->    24
+    //const DIN_PIN : u8 = 10;
+    //const CLK_PIN : u8 = 11;
+    const CS_PIN: u8 = 8;
+    const DC_PIN: u8 = 25;
+    const RST_PIN: u8 = 17;
+    const BUSY_PIN: u8 = 24;
+    const CLOCK_SPEED: u32 = 4_000_000;
     let mut spi = rppal::spi::Spi::new(
         rppal::spi::Bus::Spi0,
         rppal::spi::SlaveSelect::Ss0,
-        /*clock speed */ 4_000_000,
+        CLOCK_SPEED,
         rppal::spi::Mode::Mode0,
     )
     .expect("spi failure");
     let gpio = Gpio::new().expect("gpio failure");
-    let cs_pin = gpio.get(8).expect("failed to get pin").into_output();
-    let busy_in = gpio.get(24).expect("failed to get pin").into_input();
-    let dc = gpio.get(25).expect("failed to get pin").into_output();
-    let rst = gpio.get(17).expect("failed to get pin").into_output();
+    let cs_pin = gpio.get(CS_PIN).expect("failed to get pin").into_output();
+    let busy_in = gpio.get(BUSY_PIN).expect("failed to get pin").into_input();
+    let dc = gpio.get(DC_PIN).expect("failed to get pin").into_output();
+    let rst = gpio.get(RST_PIN).expect("failed to get pin").into_output();
     let mut delay = rppal::hal::Delay::new();
 
     let disp = Epd5in65f::new(&mut spi, cs_pin, busy_in, dc, rst, &mut delay)
