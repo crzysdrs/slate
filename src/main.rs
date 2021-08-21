@@ -538,8 +538,28 @@ where
     }
 }
 
+#[rocket::main]
+async fn rocket() {
+    println!("Rocket Launching");
+    rocket::build()
+        .mount("/gameboy", rocket::fs::FileServer::from("gameboy"))
+        .launch()
+        .await;
+}
+
 fn main() -> Result<(), ()> {
-    println!("Hello, world!");
+    let path = PathBuf::from("gameboy");
+    if !path.exists() {
+        std::fs::create_dir(&path).expect("Directory created");
+    }
+    let host = "slate";
+    let port = 7777;
+    let child = std::thread::spawn(move || {
+        println!("Rocket Launching");
+        rocket();
+    });
+
+    println!("Roms searching!");
     let toml_path = PathBuf::from("assets.toml");
     let cfg: Config = toml::from_str(&std::fs::read_to_string(&toml_path).unwrap()).unwrap();
 
@@ -579,7 +599,7 @@ fn main() -> Result<(), ()> {
     let mut rng = rand::thread_rng();
     use qr::QrCode;
 
-    for _ in 0..20 {
+    for _ in 0.. {
         let (rom, frames) = 'has_frames: loop {
             let rom = roms.choose(&mut rng).unwrap();
             let frame_count = 10;
@@ -606,11 +626,11 @@ fn main() -> Result<(), ()> {
                 image::imageops::horizontal_gradient
             };
 
-            bg(
-                &mut base,
-                &transform::rgba(&mut rng),
-                &transform::rgba(&mut rng),
-            );
+            let mut start = transform::rgba(&mut rng);
+            start[3] = 0xff;
+            let mut end = transform::rgba(&mut rng);
+            end[3] = 0xff;
+            bg(&mut base, &start, &end);
 
             let mut images = frames
                 .iter()
@@ -662,42 +682,30 @@ fn main() -> Result<(), ()> {
                 );
                 image::imageops::overlay(&mut base, &scratch, 0, 0);
             }
+            use sha2::Digest;
+            let mut sha = sha2::Sha256::new();
+            sha.update(base.as_bytes());
+            let result = sha.finalize();
+            let output = path.join(format!("{:x}.png", result));
+            let uri = format!("http://{}:{}/{}", host, port, output.display());
+            println!("Target URL {}", uri);
 
-            // if let Some(boxart) = &rom.boxart {
-            //     use image::{Rgba, GenericImageView};
-            //     let mut img = ImageReader::new(std::io::Cursor::new(std::fs::read(boxart).unwrap()))
-            //         .with_guessed_format()
-            //         .map_err(|_| ())
-            //         ?
-            //         .decode()
-            //         .map_err(|_| ())?
-            //         ;
-
-            //     let projection = transform::projection(&mut rng, img.dimensions(), (HEIGHT, WIDTH));
-            //     let mut scratch = base.clone();
-            //     imageproc::geometric_transformations::warp_into(
-            //         &img.into_rgba8(),
-            //         &projection,
-            //         Interpolation::Bicubic,
-            //         Rgba([0, 0, 0, 0]),
-            //         scratch.as_mut_rgba8().unwrap(),
-            //     );
-            //     image::imageops::overlay(&mut base, &scratch, 0, 0);
-            // }
             let dither = OctDither::new_default(base, Point::zero());
+            let image = dither.output();
+            image.save(output);
             dither.iter().draw(display).unwrap();
             let code = QrCode::new(
                 Point::new(0, 0),
                 2,
                 OctColor::Black,
                 OctColor::White,
-                b"https://crzysdrs.net",
+                uri.as_bytes(),
             );
 
             Drawable::draw(&code, display).unwrap();
             Ok(())
         })?;
-        controller.delay.delay_ms(2000u32);
+        controller.delay.delay_ms(60_000u32);
     }
 
     Ok(())

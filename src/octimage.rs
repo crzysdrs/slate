@@ -71,6 +71,17 @@ impl OctDither<image::Rgb<u8>, Vec<u8>> {
         }
     }
 
+    pub fn output(&self) -> image::DynamicImage {
+        use image::imageops::ColorMap;
+        let mut out = self.buffer.clone();
+        out.pixels_mut().for_each(|p| {
+            let rgb = self.map.colors[self.map.index_of(&p)].0.rgb();
+            *p = image::Rgb([rgb.0, rgb.1, rgb.2]);
+        });
+
+        image::DynamicImage::ImageRgb8(out)
+    }
+
     pub fn iter(
         &self,
     ) -> embedded_graphics::iterator::contiguous::IntoPixels<DitherIter<image::Rgb<u8>>> {

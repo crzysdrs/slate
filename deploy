@@ -16,7 +16,7 @@ RUSTFLAGS="-C linker=arm-linux-gnueabihf-gcc" \
          cargo build --no-default-features --features=spi ${RELEASE_FLAG} --target $TARGET
 
 # upload binary
-scp -S ssh-ident -r ./target/$TARGET/${RELEASE}/slate assets.toml ${PI_NAME}:/home/crzysdrs/
+scp -S ssh-ident -r ./target/$TARGET/${RELEASE}/slate assets.toml Rocket.toml ${PI_NAME}:/home/crzysdrs/
 
 # execute binary
 ssh -t ${PI_NAME} 'sudo RUST_BACKTRACE=1 ./slate'
