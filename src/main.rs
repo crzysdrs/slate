@@ -1,4 +1,5 @@
 mod qr;
+mod transform;
 use embedded_graphics::{
     geometry::Size, prelude::*, primitives::PrimitiveStyleBuilder, primitives::Rectangle,
 };
@@ -92,7 +93,7 @@ fn get_frames<P>(
     cart: P,
     palette: Option<usize>,
     frames: &[usize],
-) -> IOResult<Vec<image::ImageBuffer<image::Rgb<u8>, Vec<u8>>>>
+) -> IOResult<Vec<image::ImageBuffer<image::Rgba<u8>, Vec<u8>>>>
 where
     P: AsRef<Path>,
 {
@@ -133,7 +134,7 @@ where
                     _ => {}
                 }
             }
-            image::DynamicImage::ImageRgba8(image).to_rgb8()
+            image
         })
         .collect();
 
@@ -386,8 +387,8 @@ use image::ImageBuffer;
 
 fn place(
     img: &GameboyImage,
-    screen: &ImageBuffer<image::Rgb<u8>, Vec<u8>>,
-) -> ImageBuffer<image::Rgb<u8>, Vec<u8>> {
+    screen: &ImageBuffer<image::Rgba<u8>, Vec<u8>>,
+) -> ImageBuffer<image::Rgba<u8>, Vec<u8>> {
     use image::io::Reader as ImageReader;
     use image::DynamicImage;
     use imageproc::geometric_transformations::*;
@@ -400,17 +401,16 @@ fn place(
     let (x, y) = (x as f32, y as f32);
     let dim = [(0.0, 0.0), (x, 0.0), (x, y), (0.0, y)];
     let proj = Projection::from_control_points(dim, img.screen).unwrap();
-    let screen = DynamicImage::ImageRgb8(screen.clone()).to_rgba8();
-    let mut gb_save = gb.clone();
+    let screen = DynamicImage::ImageRgba8(screen.clone()).to_rgba8();
+    let mut gb_scratch = gb.clone();
     warp_into(
         &screen,
         &proj,
         Interpolation::Bicubic,
-        image::Rgba([0, 0, 0, 0x00]),
-        &mut gb,
+        image::Rgba([0, 0, 0, 0]),
+        &mut gb_scratch,
     );
-    image::imageops::overlay(&mut gb_save, &gb, 0, 0);
-    let gb = DynamicImage::ImageRgba8(gb_save).to_rgb8();
+    image::imageops::overlay(&mut gb, &gb_scratch, 0, 0);
     gb
 }
 
@@ -424,7 +424,6 @@ fn main() -> Result<(), ()> {
         .iter()
         .flat_map(|x| x.roms())
         .collect::<Vec<_>>();
-
     println!(
         "Boxart found: {}",
         roms.iter().filter(|x| x.boxart.is_some()).count()
@@ -447,86 +446,120 @@ fn main() -> Result<(), ()> {
     // Use display graphics from embedded-graphics
     let mut display = Display5in65f::default();
 
-    for skip in 0..1 {
-        epd.set_background_color(OctColor::HiZ);
-        epd.clear_frame(&mut spi, &mut delay)
-            .expect("cleared frame");
-        epd.set_background_color(*COLORS.iter().cycle().skip(skip).next().unwrap());
-        bars(&mut display, skip);
-        epd.clear_frame(&mut spi, &mut delay)
-            .expect("cleared frame");
-        epd.update_frame(&mut spi, &display.buffer(), &mut delay)
-            .map_err(|_| ())?;
-        epd.display_frame(&mut spi, &mut delay).map_err(|_| ())?;
-        delay.delay_ms(1_000u32);
-        //return Ok(());
-    }
+    // for skip in 0..1 {
+    //     epd.set_background_color(OctColor::HiZ);
+    //     epd.clear_frame(&mut spi, &mut delay)
+    //         .expect("cleared frame");
+    //     epd.set_background_color(*COLORS.iter().cycle().skip(skip).next().unwrap());
+    //     bars(&mut display, skip);
+    //     epd.clear_frame(&mut spi, &mut delay)
+    //         .expect("cleared frame");
+    //     epd.update_frame(&mut spi, &display.buffer(), &mut delay)
+    //         .map_err(|_| ())?;
+    //     epd.display_frame(&mut spi, &mut delay).map_err(|_| ())?;
+    //     delay.delay_ms(1_000u32);
+    //     //return Ok(());
+    // }
 
     use image::io::Reader as ImageReader;
-    use std::io::Cursor;
-    let img = ImageReader::new(Cursor::new(include_bytes!(
-        "/home/crzysdrs/downloads/metroid.png"
-    )))
-    .with_guessed_format()
-    .unwrap()
-    .decode()
-    .unwrap();
 
     use image::imageops::FilterType;
-    display.set_rotation(DisplayRotation::Rotate270);
-    let resized = img.resize(HEIGHT, WIDTH, FilterType::Gaussian);
-
     use image::DynamicImage;
-    let dither = OctDither::new_default(resized, Point::zero());
-    dither.iter().draw(&mut display).unwrap();
 
-    epd.update_and_display_frame(&mut spi, &display.buffer(), &mut delay)
-        .map_err(|_| ())?;
-    delay.delay_ms(1_000u32);
+    use imageproc::geometric_transformations::*;
+    use rand::Rng;
+    use std::f32::consts::PI;
+    use std::io::Cursor;
+    use transform::{Transform, Transformable};
+    let mut rng = rand::thread_rng();
+
+    display.set_rotation(DisplayRotation::Rotate270);
+    // for i in 0..20 {
+    //     let img = ImageReader::new(Cursor::new(include_bytes!(
+    //         "/home/crzysdrs/downloads/metroid.png"
+    //     )))
+    //     .with_guessed_format()
+    //     .unwrap()
+    //     .decode()
+    //     .unwrap();
+
+    //     let img = img.resize(HEIGHT, WIDTH, FilterType::Gaussian);
+    //     let mut new = DynamicImage::new_rgba8(HEIGHT, WIDTH);
+    //     image::imageops::overlay(&mut new, &img, 0, 0);
+    //     let img = new;
+    //     let transforms = (0..rng.gen_range(1..10))
+    //         .map(|_| Transform::random(&mut rng, HEIGHT, WIDTH))
+    //         .collect::<Vec<_>>();
+
+    //     let mut transformable = Transformable::new(img);
+    //     for t in transforms {
+    //         transformable.transform(t);
+    //     }
+    //     let img = transformable.into_inner();
+    //     //let resized = img.resize(HEIGHT, WIDTH, FilterType::Gaussian);
+
+    //     let dither = OctDither::new_default(img, Point::zero());
+    //     dither.iter().draw(&mut display).unwrap();
+
+    //     epd.update_and_display_frame(&mut spi, &display.buffer(), &mut delay)
+    //         .map_err(|_| ())?;
+    //     delay.delay_ms(5_000u32);
+    // }
     epd.set_background_color(OctColor::HiZ);
     epd.clear_frame(&mut spi, &mut delay)
         .expect("cleared frame");
 
     epd.set_background_color(OctColor::White);
-    for (i, f) in frames.iter().enumerate() {
-        let f = f.clone();
-        let image = place(&cfg.gameboy[i % &cfg.gameboy.len()], &f);
-        // let mut image = image::imageops::resize(
-        //     &f,
-        //     f.height() * scale,
-        //     f.width() * scale,
-        //     FilterType::Nearest,
-        // );
-        let h_scale = WIDTH as f32 / image.height() as f32;
-        let w_scale = HEIGHT as f32 / image.width() as f32;
-        let scale = match h_scale.partial_cmp(&w_scale).unwrap() {
-            std::cmp::Ordering::Greater => w_scale,
-            std::cmp::Ordering::Less => h_scale,
-            _ => panic!(),
+    for _ in 0..20 {
+        let mut base = DynamicImage::new_rgba8(HEIGHT, WIDTH);
+        let bg = if rng.gen() {
+            image::imageops::vertical_gradient
+        } else {
+            image::imageops::horizontal_gradient
         };
-        println!(
-            "Scale {} {} {} {}",
-            image.height(),
-            HEIGHT,
-            image.width(),
-            WIDTH
-        );
-        println!("Scale {} {} {}", h_scale, w_scale, scale);
-        let image = image::imageops::resize(
-            &image,
-            (scale * image.width() as f32) as u32,
-            (scale * image.height() as f32) as u32,
-            FilterType::Gaussian,
-        );
 
-        let dither = OctDither::new_default(DynamicImage::ImageRgb8(image), Point::zero());
+        bg(&mut base, &transform::rgba(&mut rng), &transform::rgba(&mut rng));
+        
+        let use_gb = true;
+        for (i, f) in frames.iter().enumerate() {
+            let f = f.clone();
+            let img = if use_gb {
+                let mut img = place(&cfg.gameboy[rng.gen_range(0..cfg.gameboy.len())], &f);
+                let mut img = DynamicImage::ImageRgba8(img);
+                let mut img = img.resize(HEIGHT, WIDTH, FilterType::Gaussian);
+                img
+            } else {
+                DynamicImage::ImageRgba8(f)
+            };
+            let transforms = (0..rng.gen_range(1..10))
+                .map(|_| Transform::random(&mut rng, HEIGHT, WIDTH))
+                .collect::<Vec<_>>();
+
+            let mut transformable = Transformable::new(img);
+            for t in transforms {
+                transformable.transform(t);
+            }
+            let img = transformable.into_inner();
+            use image::GenericImageView;
+            let projection = transform::projection(&mut rng, img.dimensions(), (HEIGHT, WIDTH));
+            use image::Rgba;
+            let mut scratch = base.clone();
+            imageproc::geometric_transformations::warp_into(
+                &img.into_rgba8(),
+                &projection,
+                Interpolation::Bicubic,
+                Rgba([0, 0, 0, 0]),
+                scratch.as_mut_rgba8().unwrap(),
+            );
+            image::imageops::overlay(&mut base, &scratch, 0, 0);
+        }
+        let dither = OctDither::new_default(base, Point::zero());
         dither.iter().draw(&mut display).unwrap();
         epd.update_frame(&mut spi, &display.buffer(), &mut delay)
             .map_err(|_| ())?;
         epd.display_frame(&mut spi, &mut delay).map_err(|_| ())?;
-        delay.delay_ms(1000u32);
+        delay.delay_ms(2000u32);
     }
-
     use qr::QrCode;
 
     let code = QrCode::new(

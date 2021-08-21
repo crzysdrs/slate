@@ -31,12 +31,10 @@ enum WindowMessage {
     Shutdown,
 }
 
-#[cfg(feature = "sim")]
 use embedded_graphics_simulator::{
     OutputSettingsBuilder, SimulatorDisplay, SimulatorEvent, Window,
 };
 
-#[cfg(feature = "sim")]
 impl<SPI, CS, BUSY, DC, RST, DELAY> WaveshareDisplay<SPI, CS, BUSY, DC, RST, DELAY>
     for OctSimDisplay
 where
@@ -57,15 +55,18 @@ where
         _delay: &mut DELAY,
     ) -> Result<Self, SPI::Error> {
         let (tx, rx) = mpsc::channel();
-
+        let color = OctColor::White;
         let child = std::thread::spawn(move || {
             let output_settings = OutputSettingsBuilder::new().build();
             let mut window = Window::new("Simulator", &output_settings);
 
-            let mut display = SimulatorDisplay::<OctColor>::new(Size {
-                width: WIDTH,
-                height: HEIGHT,
-            });
+            let mut display = SimulatorDisplay::<OctColor>::with_default_color(
+                Size {
+                    width: WIDTH,
+                    height: HEIGHT,
+                },
+                color,
+            );
 
             window.update(&display);
             'running: loop {
@@ -96,16 +97,12 @@ where
                         SimulatorEvent::Quit => break 'running,
                         _ => {}
                     }
-
-                    std::thread::sleep(std::time::Duration::from_millis(200));
                 }
+                std::thread::sleep(std::time::Duration::from_millis(200));
             }
         });
-        Ok(Self {
-            child,
-            tx,
-            color: OctColor::White,
-        })
+        let new = Self { child, tx, color };
+        Ok(new)
     }
 
     fn wake_up(&mut self, _spi: &mut SPI, _delay: &mut DELAY) -> Result<(), SPI::Error> {
