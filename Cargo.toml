@@ -28,6 +28,7 @@ serde_derive = "1.0.118"
 serde = "1.0.118"
 imageproc = "0.22.0"
 rand = "0.8.4"
+rocket = "0.5.0-rc.1"
 
 [features]
 default = ["sim"]

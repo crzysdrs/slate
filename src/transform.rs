@@ -1,8 +1,8 @@
+use image::GenericImageView;
 use image::{DynamicImage, Rgba};
 use imageproc::geometric_transformations::Projection;
 use rand::prelude::*;
 use rand::Rng;
-use image::GenericImageView;
 
 #[derive(Copy, Clone)]
 pub enum Transform {
@@ -21,14 +21,16 @@ where
 }
 
 pub fn mask(target: &mut image::RgbaImage, mask: &DynamicImage) {
-    target.pixels_mut().map(|p| p)
+    target
+        .pixels_mut()
+        .map(|p| p)
         .zip(mask.pixels().map(|(_, _, p)| p))
         .for_each(|(p, m)| {
             p[3] = m[3];
-        });    
+        });
 }
 
-pub fn projection<R>(mut rng: R, img_dim: (u32, u32), screen_dim : (u32, u32)) -> Projection
+pub fn projection<R>(mut rng: R, img_dim: (u32, u32), screen_dim: (u32, u32)) -> Projection
 where
     R: Rng,
 {
@@ -36,17 +38,10 @@ where
     Projection::translate(
         rng.gen_range(-(img_dim.0 as f32)..screen_dim.0 as f32),
         rng.gen_range(-(img_dim.1 as f32)..screen_dim.1 as f32),
-    )        
-        * Projection::translate(
-            img_dim.0 as f32 / 2.0,
-            img_dim.1 as f32 / 2.0
-        )
+    ) * Projection::translate(img_dim.0 as f32 / 2.0, img_dim.1 as f32 / 2.0)
         * Projection::rotate(rng.gen_range(0.0..2.0 * std::f32::consts::PI))
         * Projection::scale(rng.gen_range(0.5..1.5), rng.gen_range(0.5..1.5))
-        * Projection::translate(
-            - (img_dim.0 as f32) / 2.0,
-            - (img_dim.1 as f32) / 2.0
-        ) 
+        * Projection::translate(-(img_dim.0 as f32) / 2.0, -(img_dim.1 as f32) / 2.0)
 }
 
 impl Transform {
@@ -58,19 +53,18 @@ impl Transform {
             (
                 1,
                 Box::new(|mut rng| {
-                    Transform::Edges(rng.gen_range(0.0..30.0), rng.gen_range(70.0..100.0),
-                                     
-                     rgba(&mut rng), rgba(&mut rng))
+                    Transform::Edges(
+                        rng.gen_range(0.0..30.0),
+                        rng.gen_range(70.0..100.0),
+                        rgba(&mut rng),
+                        rgba(&mut rng),
+                    )
                 }),
             ),
             (
                 5,
                 Box::new(|rng| {
-                    Transform::Noise(
-                        rng.gen_range(0.0..5.0),
-                        rng.gen_range(0.0..3.0),
-                        rng.gen(),
-                    )
+                    Transform::Noise(rng.gen_range(0.0..5.0), rng.gen_range(0.0..3.0), rng.gen())
                 }),
             ),
             (

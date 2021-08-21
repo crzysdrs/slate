@@ -8,6 +8,7 @@ use epd_waveshare::color::OctColor;
 use epd_waveshare::graphics::OctDisplay;
 use epd_waveshare::{epd5in65f::*, prelude::*};
 use image;
+use rand::seq::SliceRandom;
 
 mod octimage;
 use octimage::OctDither;
@@ -112,13 +113,17 @@ where
     let mut frame_count = 0;
     let frames = frames
         .iter()
-        .map(|f| {
+        .flat_map(|f| {
+            let timeout = Some(gb::cycles::SECOND);
             for _ in frame_count..*f {
                 'discard_frame: loop {
-                    match gb.step(None, &mut PeripheralData::new(None, None, None)) {
+                    match gb.step(timeout, &mut PeripheralData::new(None, None, None)) {
                         gb::gb::GBReason::VSync => {
                             frame_count += 1;
                             break 'discard_frame;
+                        }
+                        gb::gb::GBReason::Timeout | gb::gb::GBReason::Dead => {
+                            return None;
                         }
                         _ => {}
                     }
@@ -126,15 +131,21 @@ where
             }
             let mut image = image::RgbaImage::new(160, 144);
             'frame: loop {
-                match gb.step(None, &mut PeripheralData::new(Some(&mut image), None, None)) {
+                match gb.step(
+                    timeout,
+                    &mut PeripheralData::new(Some(&mut image), None, None),
+                ) {
                     gb::gb::GBReason::VSync => {
                         frame_count += 1;
                         break 'frame;
                     }
+                    gb::gb::GBReason::Timeout | gb::gb::GBReason::Dead => {
+                        return None;
+                    }
                     _ => {}
                 }
             }
-            image
+            Some(image)
         })
         .collect();
 
@@ -414,6 +425,119 @@ fn place(
     gb
 }
 
+// fn full_reset<EPD, DELAY>(epd: EPD, display: (), delay : DELAY) -> Result<(), ()>
+// where DELAY : DelayMs<u8>,
+// EPD: WaveshareDisplay
+// {
+//     for skip in 0..8 {
+//         epd.set_background_color(OctColor::HiZ);
+//         epd.clear_frame(&mut spi, &mut delay)
+//             .map_err(|_| ())?;
+//         epd.set_background_color(*COLORS.iter().cycle().skip(skip).next().unwrap());
+//         bars(&mut display, skip);
+//         epd.clear_frame(&mut spi, &mut delay)
+//             .map_err(|_| ())?;
+//         epd.update_frame(&mut spi, &display.buffer(), &mut delay)
+//             .map_err(|_| ())?;
+//         epd.display_frame(&mut spi, &mut delay).map_err(|_| ())?;
+//         delay.delay_ms(1_000u32);
+//     }
+//     Ok(())
+// }
+
+use std::marker::PhantomData;
+struct Controller<'a, SPI, CS, BUSY, DC, RST, DELAY, DISP>
+where
+    DISP: WaveshareDisplay<SPI, CS, BUSY, DC, RST, DELAY, DisplayColor = OctColor>,
+    SPI: Write<u8>,
+    CS: OutputPin,
+    BUSY: InputPin,
+    DC: OutputPin,
+    RST: OutputPin,
+    DELAY: DelayMs<u8>,
+{
+    display: Display5in65f,
+    epd: DISP,
+    spi: &'a mut SPI,
+    pub delay: &'a mut DELAY,
+    frames_since_clear: usize,
+    _phantom: PhantomData<(RST, CS, DC, BUSY)>,
+}
+
+use embedded_hal::{
+    blocking::delay::*,
+    blocking::spi::Write,
+    digital::v2::{InputPin, OutputPin},
+};
+impl<'a, SPI, CS, BUSY, DC, RST, DELAY, DISP> Controller<'a, SPI, CS, BUSY, DC, RST, DELAY, DISP>
+where
+    DISP: WaveshareDisplay<SPI, CS, BUSY, DC, RST, DELAY, DisplayColor = OctColor>,
+    SPI: Write<u8>,
+    CS: OutputPin,
+    BUSY: InputPin,
+    DC: OutputPin,
+    RST: OutputPin,
+    DELAY: DelayMs<u8>,
+{
+    fn new(epd: DISP, spi: &'a mut SPI, delay: &'a mut DELAY) -> Result<Self, ()> {
+        let mut display = Display5in65f::default();
+        display.set_rotation(DisplayRotation::Rotate270);
+        let mut new = Self {
+            display,
+            epd,
+            spi,
+            delay,
+            frames_since_clear: 0,
+            _phantom: PhantomData,
+        };
+        new.wipe()?;
+        Ok(new)
+    }
+
+    fn wipe(&mut self) -> Result<(), ()> {
+        self.epd.set_background_color(OctColor::HiZ);
+        self.epd.clear_frame(self.spi, self.delay).map_err(|_| ())?;
+        self.frames_since_clear = 0;
+        Ok(())
+    }
+
+    fn draw<F>(&mut self, f: F) -> Result<(), ()>
+    where
+        F: FnOnce(&mut Display5in65f) -> Result<(), ()>,
+    {
+        self.frames_since_clear += 1;
+        if self.frames_since_clear > 10 {
+            self.wipe()?;
+            self.frames_since_clear = 0;
+        }
+        self.epd.set_background_color(OctColor::White);
+        f(&mut self.display)?;
+        self.epd
+            .update_and_display_frame(self.spi, &self.display.buffer(), self.delay)
+            .map_err(|_| ())?;
+        Ok(())
+    }
+}
+
+impl<'a, SPI, CS, BUSY, DC, RST, DELAY, DISP> Drop
+    for Controller<'a, SPI, CS, BUSY, DC, RST, DELAY, DISP>
+where
+    DISP: WaveshareDisplay<SPI, CS, BUSY, DC, RST, DELAY, DisplayColor = OctColor>,
+    SPI: Write<u8>,
+    CS: OutputPin,
+    BUSY: InputPin,
+    DC: OutputPin,
+    RST: OutputPin,
+    DELAY: DelayMs<u8>,
+{
+    fn drop(&mut self) {
+        self.epd
+            .sleep(self.spi, self.delay)
+            .map_err(|_| ())
+            .expect("Couldn't sleep device");
+    }
+}
+
 fn main() -> Result<(), ()> {
     println!("Hello, world!");
     let toml_path = PathBuf::from("assets.toml");
@@ -430,36 +554,17 @@ fn main() -> Result<(), ()> {
     );
     println!("Total Roms: {}", roms.len());
 
-    let rom =
-        "/home/crzysdrs/roms/cgb/Legend of Zelda, The - Link's Awakening DX (U) (V1.2) [C][!].zip";
-    let frames = get_frames(
-        &rom,
-        None,
-        &(0usize..10).map(|f| f * 60).collect::<Vec<_>>(),
-    )
-    .unwrap();
+    // let rom =
+    //     "/home/crzysdrs/roms/cgb/Legend of Zelda, The - Link's Awakening DX (U) (V1.2) [C][!].zip";
+    // let frames = get_frames(
+    //     &rom,
+    //     None,
+    //     &(0usize..10).map(|f| f * 60).collect::<Vec<_>>(),
+    // )
+    // .unwrap();
 
     let (mut spi, mut delay, mut epd) = create();
-
-    println!("Acquired SPI");
-    println!("Pins acquired");
-    // Use display graphics from embedded-graphics
-    let mut display = Display5in65f::default();
-
-    // for skip in 0..1 {
-    //     epd.set_background_color(OctColor::HiZ);
-    //     epd.clear_frame(&mut spi, &mut delay)
-    //         .expect("cleared frame");
-    //     epd.set_background_color(*COLORS.iter().cycle().skip(skip).next().unwrap());
-    //     bars(&mut display, skip);
-    //     epd.clear_frame(&mut spi, &mut delay)
-    //         .expect("cleared frame");
-    //     epd.update_frame(&mut spi, &display.buffer(), &mut delay)
-    //         .map_err(|_| ())?;
-    //     epd.display_frame(&mut spi, &mut delay).map_err(|_| ())?;
-    //     delay.delay_ms(1_000u32);
-    //     //return Ok(());
-    // }
+    let mut controller = Controller::new(epd, &mut spi, &mut delay)?;
 
     use image::io::Reader as ImageReader;
 
@@ -472,113 +577,128 @@ fn main() -> Result<(), ()> {
     use std::io::Cursor;
     use transform::{Transform, Transformable};
     let mut rng = rand::thread_rng();
-
-    display.set_rotation(DisplayRotation::Rotate270);
-    // for i in 0..20 {
-    //     let img = ImageReader::new(Cursor::new(include_bytes!(
-    //         "/home/crzysdrs/downloads/metroid.png"
-    //     )))
-    //     .with_guessed_format()
-    //     .unwrap()
-    //     .decode()
-    //     .unwrap();
-
-    //     let img = img.resize(HEIGHT, WIDTH, FilterType::Gaussian);
-    //     let mut new = DynamicImage::new_rgba8(HEIGHT, WIDTH);
-    //     image::imageops::overlay(&mut new, &img, 0, 0);
-    //     let img = new;
-    //     let transforms = (0..rng.gen_range(1..10))
-    //         .map(|_| Transform::random(&mut rng, HEIGHT, WIDTH))
-    //         .collect::<Vec<_>>();
-
-    //     let mut transformable = Transformable::new(img);
-    //     for t in transforms {
-    //         transformable.transform(t);
-    //     }
-    //     let img = transformable.into_inner();
-    //     //let resized = img.resize(HEIGHT, WIDTH, FilterType::Gaussian);
-
-    //     let dither = OctDither::new_default(img, Point::zero());
-    //     dither.iter().draw(&mut display).unwrap();
-
-    //     epd.update_and_display_frame(&mut spi, &display.buffer(), &mut delay)
-    //         .map_err(|_| ())?;
-    //     delay.delay_ms(5_000u32);
-    // }
-    epd.set_background_color(OctColor::HiZ);
-    epd.clear_frame(&mut spi, &mut delay)
-        .expect("cleared frame");
-
-    epd.set_background_color(OctColor::White);
-    for _ in 0..20 {
-        let mut base = DynamicImage::new_rgba8(HEIGHT, WIDTH);
-        let bg = if rng.gen() {
-            image::imageops::vertical_gradient
-        } else {
-            image::imageops::horizontal_gradient
-        };
-
-        bg(&mut base, &transform::rgba(&mut rng), &transform::rgba(&mut rng));
-        
-        let use_gb = true;
-        for (i, f) in frames.iter().enumerate() {
-            let f = f.clone();
-            let img = if use_gb {
-                let mut img = place(&cfg.gameboy[rng.gen_range(0..cfg.gameboy.len())], &f);
-                let mut img = DynamicImage::ImageRgba8(img);
-                let mut img = img.resize(HEIGHT, WIDTH, FilterType::Gaussian);
-                img
-            } else {
-                DynamicImage::ImageRgba8(f)
-            };
-            let transforms = (0..rng.gen_range(1..10))
-                .map(|_| Transform::random(&mut rng, HEIGHT, WIDTH))
-                .collect::<Vec<_>>();
-
-            let mut transformable = Transformable::new(img);
-            for t in transforms {
-                transformable.transform(t);
-            }
-            let img = transformable.into_inner();
-            use image::GenericImageView;
-            let projection = transform::projection(&mut rng, img.dimensions(), (HEIGHT, WIDTH));
-            use image::Rgba;
-            let mut scratch = base.clone();
-            imageproc::geometric_transformations::warp_into(
-                &img.into_rgba8(),
-                &projection,
-                Interpolation::Bicubic,
-                Rgba([0, 0, 0, 0]),
-                scratch.as_mut_rgba8().unwrap(),
-            );
-            image::imageops::overlay(&mut base, &scratch, 0, 0);
-        }
-        let dither = OctDither::new_default(base, Point::zero());
-        dither.iter().draw(&mut display).unwrap();
-        epd.update_frame(&mut spi, &display.buffer(), &mut delay)
-            .map_err(|_| ())?;
-        epd.display_frame(&mut spi, &mut delay).map_err(|_| ())?;
-        delay.delay_ms(2000u32);
-    }
     use qr::QrCode;
 
-    let code = QrCode::new(
-        Point::new(0, 0),
-        2,
-        OctColor::Black,
-        OctColor::White,
-        b"https://crzysdrs.net",
-    );
+    for _ in 0..20 {
+        let (rom, frames) = 'has_frames: loop {
+            let rom = roms.choose(&mut rng).unwrap();
+            let frame_count = 10;
+            let frames = std::panic::catch_unwind(|| {
+                get_frames(
+                    &rom.path,
+                    None,
+                    &(0usize..frame_count).map(|f| f * 60).collect::<Vec<_>>(),
+                )
+                .unwrap()
+            })
+            .unwrap_or_else(|_| vec![]);
 
-    Drawable::draw(&code, &mut display).unwrap();
+            if frames.len() == frame_count {
+                break 'has_frames (rom, frames);
+            }
+        };
 
-    epd.update_frame(&mut spi, &display.buffer(), &mut delay)
-        .map_err(|_| ())?;
-    println!("Updated Frame");
-    epd.display_frame(&mut spi, &mut delay).map_err(|_| ())?;
+        controller.draw(|display| {
+            let mut base = DynamicImage::new_rgba8(HEIGHT, WIDTH);
+            let bg = if rng.gen() {
+                image::imageops::vertical_gradient
+            } else {
+                image::imageops::horizontal_gradient
+            };
 
-    //Set the EPD to sleep
-    epd.sleep(&mut spi, &mut delay).map_err(|_| ())?;
-    println!("Sleep");
+            bg(
+                &mut base,
+                &transform::rgba(&mut rng),
+                &transform::rgba(&mut rng),
+            );
+
+            let mut images = frames
+                .iter()
+                .map(|f| {
+                    let f = f.clone();
+                    let mut img = place(&cfg.gameboy[rng.gen_range(0..cfg.gameboy.len())], &f);
+                    let mut img = DynamicImage::ImageRgba8(img);
+                    let mut img = img.resize(HEIGHT, WIDTH, FilterType::Gaussian);
+                    img
+                })
+                .chain(
+                    rom.boxart
+                        .as_ref()
+                        .map(|boxart| -> Result<DynamicImage, ()> {
+                            ImageReader::new(std::io::Cursor::new(std::fs::read(boxart).unwrap()))
+                                .with_guessed_format()
+                                .map_err(|_| ())?
+                                .decode()
+                                .map_err(|_| ())
+                        })
+                        .transpose()
+                        .ok()
+                        .flatten()
+                        .into_iter(),
+                )
+                .collect::<Vec<_>>();
+
+            images.shuffle(&mut rng);
+            for mut img in images.into_iter() {
+                let transforms = (0..rng.gen_range(1..10))
+                    .map(|_| Transform::random(&mut rng, HEIGHT, WIDTH))
+                    .collect::<Vec<_>>();
+
+                let mut transformable = Transformable::new(img);
+                for t in transforms {
+                    transformable.transform(t);
+                }
+                let img = transformable.into_inner();
+                use image::GenericImageView;
+                let projection = transform::projection(&mut rng, img.dimensions(), (HEIGHT, WIDTH));
+                use image::Rgba;
+                let mut scratch = base.clone();
+                imageproc::geometric_transformations::warp_into(
+                    &img.into_rgba8(),
+                    &projection,
+                    Interpolation::Bicubic,
+                    Rgba([0, 0, 0, 0]),
+                    scratch.as_mut_rgba8().unwrap(),
+                );
+                image::imageops::overlay(&mut base, &scratch, 0, 0);
+            }
+
+            // if let Some(boxart) = &rom.boxart {
+            //     use image::{Rgba, GenericImageView};
+            //     let mut img = ImageReader::new(std::io::Cursor::new(std::fs::read(boxart).unwrap()))
+            //         .with_guessed_format()
+            //         .map_err(|_| ())
+            //         ?
+            //         .decode()
+            //         .map_err(|_| ())?
+            //         ;
+
+            //     let projection = transform::projection(&mut rng, img.dimensions(), (HEIGHT, WIDTH));
+            //     let mut scratch = base.clone();
+            //     imageproc::geometric_transformations::warp_into(
+            //         &img.into_rgba8(),
+            //         &projection,
+            //         Interpolation::Bicubic,
+            //         Rgba([0, 0, 0, 0]),
+            //         scratch.as_mut_rgba8().unwrap(),
+            //     );
+            //     image::imageops::overlay(&mut base, &scratch, 0, 0);
+            // }
+            let dither = OctDither::new_default(base, Point::zero());
+            dither.iter().draw(display).unwrap();
+            let code = QrCode::new(
+                Point::new(0, 0),
+                2,
+                OctColor::Black,
+                OctColor::White,
+                b"https://crzysdrs.net",
+            );
+
+            Drawable::draw(&code, display).unwrap();
+            Ok(())
+        })?;
+        controller.delay.delay_ms(2000u32);
+    }
+
     Ok(())
 }
