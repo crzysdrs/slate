@@ -552,7 +552,7 @@ fn main() -> Result<(), ()> {
     if !path.exists() {
         std::fs::create_dir(&path).expect("Directory created");
     }
-    let host = "slate";
+    let host = gethostname::gethostname();
     let port = 7777;
     let child = std::thread::spawn(move || {
         println!("Rocket Launching");
@@ -617,10 +617,8 @@ fn main() -> Result<(), ()> {
                 image::imageops::horizontal_gradient
             };
 
-            let mut start = transform::rgba(&mut rng);
-            start[3] = 0xff;
-            let mut end = transform::rgba(&mut rng);
-            end[3] = 0xff;
+            let mut start = transform::rgba(&mut rng, Some(0xff));
+            let mut end = transform::rgba(&mut rng, Some(0xff));
             bg(&mut base, &start, &end);
 
             let mut images = frames
@@ -679,7 +677,7 @@ fn main() -> Result<(), ()> {
             let result = sha.finalize();
             let png_name = format!("{:x}.png", result);
             let output = path.join(&png_name);
-            let uri = format!("http://{}:{}/{}", host, port, output.display());
+            let uri = format!("http://{}:{}/{}", host.to_string_lossy(), port, output.display());
             println!("Target URL {}", uri);
 
             let dither = OctDither::new_default(base, Point::zero());
@@ -701,7 +699,7 @@ fn main() -> Result<(), ()> {
             Drawable::draw(&code, display).unwrap();
             Ok(())
         })?;
-        controller.delay.delay_ms(60_000u32);
+        controller.delay.delay_ms(10_000u32);
     }
 
     Ok(())

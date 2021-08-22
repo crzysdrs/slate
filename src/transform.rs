@@ -7,17 +7,17 @@ use rand::Rng;
 #[derive(Copy, Clone)]
 pub enum Transform {
     Edges(f32, f32, Rgba<u8>, Rgba<u8>),
+    OverlayEdges(f32, f32, Rgba<u8>),
     Noise(f64, f64, u64),
-    Threshold(u8, Rgba<u8>, Rgba<u8>),
-    Blur(f32),
-    Warp(Projection, Rgba<u8>),
+    Threshold(u32, Rgba<u8>, Rgba<u8>),
+    Blur(f32)
 }
 
-pub fn rgba<R>(mut rng: R) -> Rgba<u8>
+pub fn rgba<R>(mut rng: R, alpha: Option<u8>) -> Rgba<u8>
 where
     R: Rng,
 {
-    Rgba([rng.gen(), rng.gen(), rng.gen(), rng.gen()])
+    Rgba([rng.gen(), rng.gen(), rng.gen(), alpha.unwrap_or_else(|| rng.gen())])
 }
 
 pub fn mask(target: &mut image::RgbaImage, mask: &DynamicImage) {
@@ -26,7 +26,9 @@ pub fn mask(target: &mut image::RgbaImage, mask: &DynamicImage) {
         .map(|p| p)
         .zip(mask.pixels().map(|(_, _, p)| p))
         .for_each(|(p, m)| {
-            p[3] = m[3];
+            if m[3] == 0 {
+                *p = Rgba([0, 0, 0, 0]);
+            }
         });
 }
 
@@ -54,23 +56,33 @@ impl Transform {
                 1,
                 Box::new(|mut rng| {
                     Transform::Edges(
-                        rng.gen_range(0.0..30.0),
-                        rng.gen_range(70.0..100.0),
-                        rgba(&mut rng),
-                        rgba(&mut rng),
+                        rng.gen_range(0.0..0.3),
+                        rng.gen_range(0.7..1.0),
+                        rgba(&mut rng, Some(0xff)),
+                        rgba(&mut rng, Some(0xff)),
+                    )
+                }),
+            ),
+            (
+                1,
+                Box::new(|mut rng| {
+                    Transform::OverlayEdges(
+                        rng.gen_range(0.0..0.3),
+                        rng.gen_range(0.7..1.0),
+                        rgba(&mut rng, Some(0xff)),
                     )
                 }),
             ),
             (
                 5,
                 Box::new(|rng| {
-                    Transform::Noise(rng.gen_range(0.0..5.0), rng.gen_range(0.0..3.0), rng.gen())
+                    Transform::Noise(rng.gen_range(0.0..0.3), rng.gen_range(0.7..1.0), rng.gen())
                 }),
             ),
             (
                 1,
                 Box::new(|mut rng| {
-                    Transform::Threshold(rng.gen_range(128..200), rgba(&mut rng), rgba(&mut rng))
+                    Transform::Threshold(rng.gen_range(1..40), rgba(&mut rng, Some(0xff)), rgba(&mut rng, Some(0xff)))
                 }),
             ),
             (1, Box::new(|rng| Transform::Blur(rng.gen_range(0.0..10.0)))),
@@ -106,15 +118,29 @@ impl Transformable {
                 mask(&mut rgb8, &self.image);
                 self.image = DynamicImage::ImageRgba8(rgb8);
             }
+            Transform::OverlayEdges(low, high, fg_color) => {
+                let gray = self.image.to_luma8();
+                let tmp = DynamicImage::ImageLuma8(imageproc::edges::canny(&gray, low, high));
+                let mut rgb8 = tmp.to_rgba8();
+                rgb8.pixels_mut().for_each(|p| {
+                    if *p == Rgba([0, 0, 0, 0xff]) {
+                        *p = Rgba([0, 0, 0, 0]);
+                    } else {
+                        *p = fg_color
+                    }
+                });
+
+                image::imageops::overlay(&mut self.image, &rgb8, 0, 0);
+            }
             Transform::Noise(mean, stddev, seed) => {
                 let mut image = self.image.to_rgba8();
                 imageproc::noise::gaussian_noise_mut(&mut image, mean, stddev, seed);
                 mask(&mut image, &self.image);
                 self.image = DynamicImage::ImageRgba8(image);
             }
-            Transform::Threshold(threshold, fg_color, bg_color) => {
+            Transform::Threshold(radius, fg_color, bg_color) => {
                 let mut image = self.image.to_luma8();
-                imageproc::contrast::threshold_mut(&mut image, threshold);
+                let mut image = imageproc::contrast::adaptive_threshold(&image, radius);
                 let mut rgb8 = DynamicImage::ImageLuma8(image).into_rgba8();
                 rgb8.pixels_mut().for_each(|p| {
                     if *p == Rgba([0, 0, 0, 0xff]) {
@@ -129,16 +155,6 @@ impl Transformable {
             Transform::Blur(sigma) => {
                 let mut image = self.image.to_rgba8();
                 let image = imageproc::filter::gaussian_blur_f32(&image, sigma);
-                self.image = DynamicImage::ImageRgba8(image);
-            }
-            Transform::Warp(projection, default_color) => {
-                let mut image = self.image.to_rgba8();
-                let image = imageproc::geometric_transformations::warp(
-                    &image,
-                    &projection,
-                    imageproc::geometric_transformations::Interpolation::Bicubic,
-                    default_color,
-                );
                 self.image = DynamicImage::ImageRgba8(image);
             }
         }
