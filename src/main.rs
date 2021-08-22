@@ -686,13 +686,18 @@ fn main() -> Result<(), ()> {
             let mut sha = sha2::Sha256::new();
             sha.update(base.as_bytes());
             let result = sha.finalize();
-            let output = path.join(format!("{:x}.png", result));
+            let png_name = format!("{:x}.png", result);
+            let output = path.join(&png_name);
             let uri = format!("http://{}:{}/{}", host, port, output.display());
             println!("Target URL {}", uri);
 
             let dither = OctDither::new_default(base, Point::zero());
             let image = dither.output();
-            image.save(output);
+            use std::os::unix::fs::symlink;
+            image.save(&output);
+            let symlink_file = PathBuf::from("gameboy/latest.png");
+            std::fs::remove_file(&symlink_file);
+            symlink(&png_name, &symlink_file);
             dither.iter().draw(display).unwrap();
             let code = QrCode::new(
                 Point::new(0, 0),
