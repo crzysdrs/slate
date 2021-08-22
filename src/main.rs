@@ -446,7 +446,7 @@ fn place(
 // }
 
 use std::marker::PhantomData;
-struct Controller<'a, SPI, CS, BUSY, DC, RST, DELAY, DISP>
+struct Controller<SPI, CS, BUSY, DC, RST, DELAY, DISP>
 where
     DISP: WaveshareDisplay<SPI, CS, BUSY, DC, RST, DELAY, DisplayColor = OctColor>,
     SPI: Write<u8>,
@@ -458,8 +458,8 @@ where
 {
     display: Display5in65f,
     epd: DISP,
-    spi: &'a mut SPI,
-    pub delay: &'a mut DELAY,
+    spi: SPI,
+    pub delay: DELAY,
     frames_since_clear: usize,
     _phantom: PhantomData<(RST, CS, DC, BUSY)>,
 }
@@ -469,7 +469,7 @@ use embedded_hal::{
     blocking::spi::Write,
     digital::v2::{InputPin, OutputPin},
 };
-impl<'a, SPI, CS, BUSY, DC, RST, DELAY, DISP> Controller<'a, SPI, CS, BUSY, DC, RST, DELAY, DISP>
+impl<SPI, CS, BUSY, DC, RST, DELAY, DISP> Controller<SPI, CS, BUSY, DC, RST, DELAY, DISP>
 where
     DISP: WaveshareDisplay<SPI, CS, BUSY, DC, RST, DELAY, DisplayColor = OctColor>,
     SPI: Write<u8>,
@@ -479,7 +479,7 @@ where
     RST: OutputPin,
     DELAY: DelayMs<u8>,
 {
-    fn new(epd: DISP, spi: &'a mut SPI, delay: &'a mut DELAY) -> Result<Self, ()> {
+    fn new(epd: DISP, spi: SPI, delay: DELAY) -> Result<Self, ()> {
         let mut display = Display5in65f::default();
         display.set_rotation(DisplayRotation::Rotate270);
         let mut new = Self {
@@ -496,7 +496,7 @@ where
 
     fn wipe(&mut self) -> Result<(), ()> {
         self.epd.set_background_color(OctColor::HiZ);
-        self.epd.clear_frame(self.spi, self.delay).map_err(|_| ())?;
+        self.epd.clear_frame(&mut self.spi, &mut self.delay).map_err(|_| ())?;
         self.frames_since_clear = 0;
         Ok(())
     }
@@ -513,14 +513,14 @@ where
         self.epd.set_background_color(OctColor::White);
         f(&mut self.display)?;
         self.epd
-            .update_and_display_frame(self.spi, &self.display.buffer(), self.delay)
+            .update_and_display_frame(&mut self.spi, &self.display.buffer(), &mut self.delay)
             .map_err(|_| ())?;
         Ok(())
     }
 }
 
-impl<'a, SPI, CS, BUSY, DC, RST, DELAY, DISP> Drop
-    for Controller<'a, SPI, CS, BUSY, DC, RST, DELAY, DISP>
+impl<SPI, CS, BUSY, DC, RST, DELAY, DISP> Drop
+    for Controller<SPI, CS, BUSY, DC, RST, DELAY, DISP>
 where
     DISP: WaveshareDisplay<SPI, CS, BUSY, DC, RST, DELAY, DisplayColor = OctColor>,
     SPI: Write<u8>,
@@ -532,7 +532,7 @@ where
 {
     fn drop(&mut self) {
         self.epd
-            .sleep(self.spi, self.delay)
+            .sleep(&mut self.spi, &mut self.delay)
             .map_err(|_| ())
             .expect("Couldn't sleep device");
     }
@@ -574,17 +574,8 @@ fn main() -> Result<(), ()> {
     );
     println!("Total Roms: {}", roms.len());
 
-    // let rom =
-    //     "/home/crzysdrs/roms/cgb/Legend of Zelda, The - Link's Awakening DX (U) (V1.2) [C][!].zip";
-    // let frames = get_frames(
-    //     &rom,
-    //     None,
-    //     &(0usize..10).map(|f| f * 60).collect::<Vec<_>>(),
-    // )
-    // .unwrap();
-
-    let (mut spi, mut delay, mut epd) = create();
-    let mut controller = Controller::new(epd, &mut spi, &mut delay)?;
+    let (spi, delay, epd) = create();
+    let mut controller = Controller::new(epd, spi, delay)?;
 
     use image::io::Reader as ImageReader;
 
@@ -695,7 +686,7 @@ fn main() -> Result<(), ()> {
             let image = dither.output();
             use std::os::unix::fs::symlink;
             image.save(&output);
-            let symlink_file = PathBuf::from("gameboy/latest.png");
+            let symlink_file = path.join("latest.png");
             std::fs::remove_file(&symlink_file);
             symlink(&png_name, &symlink_file);
             dither.iter().draw(display).unwrap();
