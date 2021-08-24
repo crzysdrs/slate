@@ -62,7 +62,7 @@ where
             .lines()
             .enumerate()
             .flat_map(|(y, l)| l.chars().enumerate().map(move |(x, c)| (x, y, c == '█')))
-            .map(|(x, y, c)| {
+            .try_for_each(|(x, y, c)| {
                 let x = x as i32;
                 let y = y as i32;
 
@@ -70,8 +70,7 @@ where
                     &rect.translate(Point::new(x * self.scale, y * self.scale)),
                     if c { self.fg_color } else { self.bg_color },
                 )
-            })
-            .collect::<Result<_, _>>()?;
+            })?;
         Ok(())
     }
 }

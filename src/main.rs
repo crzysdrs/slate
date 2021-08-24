@@ -1,4 +1,5 @@
 mod qr;
+mod roms;
 mod transform;
 use embedded_graphics::{
     geometry::Size, prelude::*, primitives::PrimitiveStyleBuilder, primitives::Rectangle,
@@ -7,15 +8,22 @@ use embedded_hal::prelude::*;
 use epd_waveshare::color::OctColor;
 use epd_waveshare::graphics::OctDisplay;
 use epd_waveshare::{epd5in65f::*, prelude::*};
-use image;
 use rand::seq::SliceRandom;
-
 mod octimage;
+use anyhow::{anyhow, Result};
+use display::create;
+use image::imageops::FilterType;
+use image::io::Reader as ImageReader;
+use image::DynamicImage;
+use image::GenericImageView;
+use image::ImageBuffer;
+use imageproc::geometric_transformations::*;
 use octimage::OctDither;
-use std::io::Result as IOResult;
-
-use std::io::Read;
-use std::path::{Path, PathBuf};
+use qr::QrCode;
+use rand::Rng;
+use roms::{get_frames, Config, GameboyImage};
+use std::path::PathBuf;
+use transform::{Transform, Transformable};
 
 static COLORS: [OctColor; 8] = [
     OctColor::HiZ,
@@ -38,118 +46,6 @@ cfg_if::cfg_if! {
     } else {
         compile_error!("Wrong feature");
     }
-}
-
-use display::create;
-
-use gb;
-
-fn open_rom<P>(rom: P) -> IOResult<Vec<u8>>
-where
-    P: AsRef<Path>,
-{
-    let rom = rom.as_ref();
-    match rom.extension() {
-        None => Err(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            format!("Missing file extension {}", rom.display()),
-        )),
-        Some(ext) => match ext.to_str() {
-            Some("zip") => {
-                let f = std::fs::File::open(rom)?;
-                let mut z = zip::ZipArchive::new(f)?;
-                let mut res = None;
-                for c_id in 0..z.len() {
-                    if let Ok(mut c_file) = z.by_index(c_id) {
-                        if c_file.name().ends_with(".gb") || c_file.name().ends_with(".gbc") {
-                            let mut buf = Vec::new();
-                            c_file.read_to_end(&mut buf)?;
-                            res = Some(buf);
-                        }
-                    }
-                }
-                if let Some(buf) = res {
-                    Ok(buf)
-                } else {
-                    Err(std::io::Error::new(
-                        std::io::ErrorKind::Other,
-                        "No rom file found in archive",
-                    ))
-                }
-            }
-            Some("gb") | Some("gbc") => Ok(std::fs::read(rom)?),
-            Some(e) => Err(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                format!("Unknown Extension {}", e),
-            )),
-            None => Err(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                format!("Invalid Extension"),
-            )),
-        },
-    }
-}
-
-fn get_frames<P>(
-    cart: P,
-    palette: Option<usize>,
-    frames: &[usize],
-) -> IOResult<Vec<image::ImageBuffer<image::Rgba<u8>, Vec<u8>>>>
-where
-    P: AsRef<Path>,
-{
-    use gb::peripherals::PeripheralData;
-    let cart = gb::cart::Cart::new(open_rom(cart)?);
-    let trace = false;
-    let boot_rom = None;
-    let mut gb = gb::gb::GB::new(
-        cart,
-        trace,
-        boot_rom,
-        palette,
-        Some((gb::cycles::SECOND / 65536).into()),
-    );
-
-    let mut frame_count = 0;
-    let frames = frames
-        .iter()
-        .flat_map(|f| {
-            let timeout = Some(gb::cycles::SECOND);
-            for _ in frame_count..*f {
-                'discard_frame: loop {
-                    match gb.step(timeout, &mut PeripheralData::new(None, None, None)) {
-                        gb::gb::GBReason::VSync => {
-                            frame_count += 1;
-                            break 'discard_frame;
-                        }
-                        gb::gb::GBReason::Timeout | gb::gb::GBReason::Dead => {
-                            return None;
-                        }
-                        _ => {}
-                    }
-                }
-            }
-            let mut image = image::RgbaImage::new(160, 144);
-            'frame: loop {
-                match gb.step(
-                    timeout,
-                    &mut PeripheralData::new(Some(&mut image), None, None),
-                ) {
-                    gb::gb::GBReason::VSync => {
-                        frame_count += 1;
-                        break 'frame;
-                    }
-                    gb::gb::GBReason::Timeout | gb::gb::GBReason::Dead => {
-                        return None;
-                    }
-                    _ => {}
-                }
-            }
-            Some(image)
-        })
-        .collect();
-
-    Ok(frames)
 }
 
 fn bars<DISP, E>(display: &mut DISP, offset: usize)
@@ -192,10 +88,7 @@ where
 
         let character_style = MonoTextStyle::new(&FONT_10X20, OctColor::White);
         // Create a new text style
-        let text_style = TextStyleBuilder::new()
-            //.text_color(OctColor::Black)
-            //.background_color(OctColor::White)
-            .build();
+        let text_style = TextStyleBuilder::new().build();
 
         // Create a text at position (20, 30) and draw it using the previously defined style
         Text::with_text_style(
@@ -207,201 +100,12 @@ where
         .draw(display)
         .expect("Wrote Text");
     }
-    // Display updated frame
 }
-
-#[derive(Deserialize)]
-struct RomData {
-    roms: PathBuf,
-    boxart: PathBuf,
-}
-
-#[derive(Debug, Eq, PartialEq, Clone, Copy)]
-enum Lang {
-    En,
-    Jp,
-    Other,
-}
-
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
-enum Country {
-    USA,
-    Japan,
-    Other,
-}
-
-#[derive(Debug, Clone)]
-struct Art {
-    name: String,
-    path: PathBuf,
-    lang: Vec<Lang>,
-    country: Vec<Country>,
-}
-
-#[derive(Debug)]
-struct Rom {
-    path: PathBuf,
-    lang: Vec<Country>,
-    boxart: Option<PathBuf>,
-}
-
-impl RomData {
-    fn roms(&self) -> Vec<Rom> {
-        use regex::Regex;
-        use walkdir::WalkDir;
-
-        let parens = Regex::new(r"\(([^)]+?)\)").unwrap();
-        let art = WalkDir::new(&self.boxart)
-            .into_iter()
-            .filter_map(Result::ok)
-            .filter(|e| !e.file_type().is_dir())
-            .map(|f| f.path().to_owned())
-            .map(|p| {
-                let name = p.file_stem().unwrap().to_str().unwrap();
-                let data = parens
-                    .captures_iter(&name)
-                    .flat_map(|cap| {
-                        cap[1]
-                            .split(",")
-                            .map(|x| x.to_string())
-                            .collect::<Vec<_>>()
-                            .into_iter()
-                    })
-                    .fold((vec![], vec![]), |mut state, attr| {
-                        let attr = attr.trim();
-                        let lang = match attr {
-                            "En" => Some(Lang::En),
-                            "Ja" => Some(Lang::Jp),
-                            "Fr" | "De" | "Es" | "It" | "Nl" | "Pt" | "Sv" | "No" | "Da" | "Fi"
-                            | "Zh" => Some(Lang::Other),
-                            _ => None,
-                        };
-                        let other = match attr {
-                            "GBC" | "GB Compatible" | "SGB Enhanced" | "Rev A" | "Rev B"
-                            | "Beta" | "Rumble Version" | "NP" | "Sample" | "AX9P" | "AP9P"
-                            | "Rev 1" | "Rev 2" | "Rev 3" | "Rev AB" | "DMG-N5" | "DMG-EM"
-                            | "HAL Laboratory" | "Unl" | "Activision" => true,
-                            _ => false,
-                        };
-                        let country = match attr {
-                            "USA" => Some(Country::USA),
-                            "Japan" => Some(Country::Japan),
-                            "Canada" | "Sweden" | "Netherlands" | "Korea" | "World" | "Spain"
-                            | "Europe" | "Australia" | "Germany" | "France" | "Italy" => {
-                                Some(Country::Other)
-                            }
-                            _ => None,
-                        };
-
-                        assert!(
-                            country.is_some() || other || lang.is_some(),
-                            "Metadata for {} {}",
-                            name,
-                            attr
-                        );
-                        if let Some(lang) = lang {
-                            state.0.push(lang);
-                        }
-                        if let Some(country) = country {
-                            state.1.push(country);
-                        }
-                        state
-                    });
-
-                let name = parens.replace_all(&name, "");
-
-                Art {
-                    path: p.clone(),
-                    name: name.trim().to_string(),
-                    lang: data.0,
-                    country: data.1,
-                }
-            })
-            .collect::<Vec<_>>();
-
-        let attr_re = Regex::new(r"\(([^)]+?)\)").unwrap();
-        let junk_re = Regex::new(r"\[([^]]+?)\]").unwrap();
-        let roms = WalkDir::new(&self.roms)
-            .into_iter()
-            .filter_map(Result::ok)
-            .filter(|e| !e.file_type().is_dir())
-            .map(|f| f.path().to_owned())
-            .map(|p| {
-                let name = p.file_stem().unwrap().to_str().unwrap();
-                let data = attr_re
-                    .captures_iter(&name)
-                    .flat_map(|cap| {
-                        cap[1]
-                            .split(",")
-                            .map(|x| x.to_string())
-                            .collect::<Vec<_>>()
-                            .into_iter()
-                    })
-                    .fold(vec![], |mut state, attr| {
-                        let lang = match attr.as_str() {
-                            "J" => Some(Country::Japan),
-                            "World" | "UE" | "U" => Some(Country::USA),
-                            "E" | "Sw" | "G" => Some(Country::Other),
-                            _ => None,
-                        };
-                        if let Some(lang) = lang {
-                            state.push(lang);
-                        }
-                        state
-                    });
-
-                let search = attr_re.replace_all(&name, "");
-                let search = junk_re.replace_all(&search, "");
-                let search = search.trim();
-                use strsim::jaro;
-
-                let best = art
-                    .iter()
-                    .filter(|x| {
-                        data.iter()
-                            .next()
-                            .map(|d| x.country.contains(&d))
-                            .unwrap_or(false)
-                    })
-                    .map(|x| (x, jaro(&x.name, search)))
-                    .filter(|x| x.1 > 0.75)
-                    .max_by(|x, y| x.1.partial_cmp(&y.1).unwrap());
-                Rom {
-                    path: p,
-                    boxart: best.map(|x| x.0.path.to_owned()),
-                    lang: data,
-                }
-            })
-            .collect::<Vec<_>>();
-
-        roms
-    }
-}
-
-use serde_derive::Deserialize;
-use toml;
-
-#[derive(Deserialize)]
-struct GameboyImage {
-    screen: [(f32, f32); 4],
-    path: PathBuf,
-    color: bool,
-}
-
-#[derive(Deserialize)]
-struct Config {
-    romdata: Vec<RomData>,
-    gameboy: Vec<GameboyImage>,
-}
-
-use image::ImageBuffer;
 
 fn place(
     img: &GameboyImage,
     screen: &ImageBuffer<image::Rgba<u8>, Vec<u8>>,
 ) -> ImageBuffer<image::Rgba<u8>, Vec<u8>> {
-    use image::io::Reader as ImageReader;
-    use image::DynamicImage;
     use imageproc::geometric_transformations::*;
     let mut gb = ImageReader::open(&img.path)
         .unwrap()
@@ -425,26 +129,6 @@ fn place(
     gb
 }
 
-// fn full_reset<EPD, DELAY>(epd: EPD, display: (), delay : DELAY) -> Result<(), ()>
-// where DELAY : DelayMs<u8>,
-// EPD: WaveshareDisplay
-// {
-//     for skip in 0..8 {
-//         epd.set_background_color(OctColor::HiZ);
-//         epd.clear_frame(&mut spi, &mut delay)
-//             .map_err(|_| ())?;
-//         epd.set_background_color(*COLORS.iter().cycle().skip(skip).next().unwrap());
-//         bars(&mut display, skip);
-//         epd.clear_frame(&mut spi, &mut delay)
-//             .map_err(|_| ())?;
-//         epd.update_frame(&mut spi, &display.buffer(), &mut delay)
-//             .map_err(|_| ())?;
-//         epd.display_frame(&mut spi, &mut delay).map_err(|_| ())?;
-//         delay.delay_ms(1_000u32);
-//     }
-//     Ok(())
-// }
-
 use std::marker::PhantomData;
 struct Controller<SPI, CS, BUSY, DC, RST, DELAY, DISP>
 where
@@ -455,6 +139,7 @@ where
     DC: OutputPin,
     RST: OutputPin,
     DELAY: DelayMs<u8>,
+    <SPI as _embedded_hal_blocking_spi_Write<u8>>::Error: std::fmt::Debug,
 {
     display: Display5in65f,
     epd: DISP,
@@ -478,8 +163,9 @@ where
     DC: OutputPin,
     RST: OutputPin,
     DELAY: DelayMs<u8>,
+    <SPI as _embedded_hal_blocking_spi_Write<u8>>::Error: std::error::Error + Send + Sync + 'static,
 {
-    fn new(epd: DISP, spi: SPI, delay: DELAY) -> Result<Self, ()> {
+    fn new(epd: DISP, spi: SPI, delay: DELAY) -> Result<Self> {
         let mut display = Display5in65f::default();
         display.set_rotation(DisplayRotation::Rotate270);
         let mut new = Self {
@@ -494,16 +180,16 @@ where
         Ok(new)
     }
 
-    fn wipe(&mut self) -> Result<(), ()> {
+    fn wipe(&mut self) -> Result<()> {
         self.epd.set_background_color(OctColor::HiZ);
-        self.epd.clear_frame(&mut self.spi, &mut self.delay).map_err(|_| ())?;
+        self.epd.clear_frame(&mut self.spi, &mut self.delay)?;
         self.frames_since_clear = 0;
         Ok(())
     }
 
-    fn draw<F>(&mut self, f: F) -> Result<(), ()>
+    fn draw<F>(&mut self, f: F) -> Result<()>
     where
-        F: FnOnce(&mut Display5in65f) -> Result<(), ()>,
+        F: FnOnce(&mut Display5in65f) -> Result<()>,
     {
         self.frames_since_clear += 1;
         if self.frames_since_clear > 10 {
@@ -513,14 +199,12 @@ where
         self.epd.set_background_color(OctColor::White);
         f(&mut self.display)?;
         self.epd
-            .update_and_display_frame(&mut self.spi, &self.display.buffer(), &mut self.delay)
-            .map_err(|_| ())?;
+            .update_and_display_frame(&mut self.spi, self.display.buffer(), &mut self.delay)?;
         Ok(())
     }
 }
 
-impl<SPI, CS, BUSY, DC, RST, DELAY, DISP> Drop
-    for Controller<SPI, CS, BUSY, DC, RST, DELAY, DISP>
+impl<SPI, CS, BUSY, DC, RST, DELAY, DISP> Drop for Controller<SPI, CS, BUSY, DC, RST, DELAY, DISP>
 where
     DISP: WaveshareDisplay<SPI, CS, BUSY, DC, RST, DELAY, DisplayColor = OctColor>,
     SPI: Write<u8>,
@@ -529,15 +213,16 @@ where
     DC: OutputPin,
     RST: OutputPin,
     DELAY: DelayMs<u8>,
+    <SPI as _embedded_hal_blocking_spi_Write<u8>>::Error: std::fmt::Debug,
 {
     fn drop(&mut self) {
         self.epd
             .sleep(&mut self.spi, &mut self.delay)
-            .map_err(|_| ())
             .expect("Couldn't sleep device");
     }
 }
 
+#[cfg(feature = "web")]
 #[rocket::main]
 async fn rocket() {
     println!("Rocket Launching");
@@ -547,13 +232,16 @@ async fn rocket() {
         .await;
 }
 
-fn main() -> Result<(), ()> {
+fn main() -> Result<()> {
     let path = PathBuf::from("gameboy");
     if !path.exists() {
         std::fs::create_dir(&path).expect("Directory created");
     }
+
     let host = gethostname::gethostname();
     let port = 7777;
+
+    #[cfg(feature = "web")]
     let child = std::thread::spawn(move || {
         println!("Rocket Launching");
         rocket();
@@ -577,20 +265,17 @@ fn main() -> Result<(), ()> {
     let (spi, delay, epd) = create();
     let mut controller = Controller::new(epd, spi, delay)?;
 
-    use image::io::Reader as ImageReader;
+    for skip in 0..8 {
+        controller.draw(|display| {
+            display.set_rotation(DisplayRotation::Rotate0);
+            bars(display, skip);
+            Ok(())
+        })?;
+        controller.delay.delay_ms(1_000u32);
+    }
 
-    use image::imageops::FilterType;
-    use image::DynamicImage;
-
-    use imageproc::geometric_transformations::*;
-    use rand::Rng;
-    use std::f32::consts::PI;
-    use std::io::Cursor;
-    use transform::{Transform, Transformable};
     let mut rng = rand::thread_rng();
-    use qr::QrCode;
-
-    for _ in 0.. {
+    loop {
         let (rom, frames) = 'has_frames: loop {
             let rom = roms.choose(&mut rng).unwrap();
             let frame_count = 10;
@@ -610,6 +295,7 @@ fn main() -> Result<(), ()> {
         };
 
         controller.draw(|display| {
+            display.set_rotation(DisplayRotation::Rotate270);
             let mut base = DynamicImage::new_rgba8(HEIGHT, WIDTH);
             let bg = if rng.gen() {
                 image::imageops::vertical_gradient
@@ -617,28 +303,27 @@ fn main() -> Result<(), ()> {
                 image::imageops::horizontal_gradient
             };
 
-            let mut start = transform::rgba(&mut rng, Some(0xff));
-            let mut end = transform::rgba(&mut rng, Some(0xff));
+            let start = transform::rgba(&mut rng, Some(0xff));
+            let end = transform::rgba(&mut rng, Some(0xff));
             bg(&mut base, &start, &end);
 
             let mut images = frames
                 .iter()
                 .map(|f| {
                     let f = f.clone();
-                    let mut img = place(&cfg.gameboy[rng.gen_range(0..cfg.gameboy.len())], &f);
-                    let mut img = DynamicImage::ImageRgba8(img);
-                    let mut img = img.resize(HEIGHT, WIDTH, FilterType::Gaussian);
-                    img
+                    let img = place(&cfg.gameboy[rng.gen_range(0..cfg.gameboy.len())], &f);
+                    let img = DynamicImage::ImageRgba8(img);
+                    img.resize(HEIGHT, WIDTH, FilterType::Gaussian)
                 })
                 .chain(
                     rom.boxart
                         .as_ref()
-                        .map(|boxart| -> Result<DynamicImage, ()> {
+                        .map(|boxart| -> Result<DynamicImage> {
                             ImageReader::new(std::io::Cursor::new(std::fs::read(boxart).unwrap()))
                                 .with_guessed_format()
-                                .map_err(|_| ())?
+                                .map_err(|e| anyhow!("{}", e))?
                                 .decode()
-                                .map_err(|_| ())
+                                .map_err(|e| anyhow!("{}", e))
                         })
                         .transpose()
                         .ok()
@@ -648,7 +333,7 @@ fn main() -> Result<(), ()> {
                 .collect::<Vec<_>>();
 
             images.shuffle(&mut rng);
-            for mut img in images.into_iter() {
+            for img in images.into_iter() {
                 let transforms = (0..rng.gen_range(1..10))
                     .map(|_| Transform::random(&mut rng, HEIGHT, WIDTH))
                     .collect::<Vec<_>>();
@@ -658,7 +343,6 @@ fn main() -> Result<(), ()> {
                     transformable.transform(t);
                 }
                 let img = transformable.into_inner();
-                use image::GenericImageView;
                 let projection = transform::projection(&mut rng, img.dimensions(), (HEIGHT, WIDTH));
                 use image::Rgba;
                 let mut scratch = base.clone();
@@ -677,16 +361,21 @@ fn main() -> Result<(), ()> {
             let result = sha.finalize();
             let png_name = format!("{:x}.png", result);
             let output = path.join(&png_name);
-            let uri = format!("http://{}:{}/{}", host.to_string_lossy(), port, output.display());
+            let uri = format!(
+                "http://{}:{}/{}",
+                host.to_string_lossy(),
+                port,
+                output.display()
+            );
             println!("Target URL {}", uri);
 
             let dither = OctDither::new_default(base, Point::zero());
             let image = dither.output();
             use std::os::unix::fs::symlink;
-            image.save(&output);
+            image.save(&output)?;
             let symlink_file = path.join("latest.png");
-            std::fs::remove_file(&symlink_file);
-            symlink(&png_name, &symlink_file);
+            std::fs::remove_file(&symlink_file)?;
+            symlink(&png_name, &symlink_file)?;
             dither.iter().draw(display).unwrap();
             let code = QrCode::new(
                 Point::new(0, 0),
@@ -699,8 +388,6 @@ fn main() -> Result<(), ()> {
             Drawable::draw(&code, display).unwrap();
             Ok(())
         })?;
-        controller.delay.delay_ms(10_000u32);
+        controller.delay.delay_ms(120_000u32);
     }
-
-    Ok(())
 }

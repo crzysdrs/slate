@@ -1,8 +1,5 @@
 use embedded_graphics::prelude::*;
-
 use epd_waveshare::prelude::*;
-
-use image;
 use std::convert::TryInto;
 
 pub trait OctSubpixel:
@@ -75,7 +72,7 @@ impl OctDither<image::Rgb<u8>, Vec<u8>> {
         use image::imageops::ColorMap;
         let mut out = self.buffer.clone();
         out.pixels_mut().for_each(|p| {
-            let rgb = self.map.colors[self.map.index_of(&p)].0.rgb();
+            let rgb = self.map.colors[self.map.index_of(p)].0.rgb();
             *p = image::Rgb([rgb.0, rgb.1, rgb.2]);
         });
 
@@ -116,7 +113,7 @@ where
         use image::imageops::ColorMap;
         self.iter
             .next()
-            .map(|p| self.map.colors[self.map.index_of(&p)].0)
+            .map(|p| self.map.colors[self.map.index_of(p)].0)
     }
 }
 
@@ -138,10 +135,7 @@ impl OctDither<image::Rgb<u8>, Vec<u8>> {
                 .iter()
                 .map(|c| {
                     let rgb = c.rgb();
-                    (
-                        *c,
-                        image::Rgb::<u8>([rgb.0.into(), rgb.1.into(), rgb.2.into()]),
-                    )
+                    (*c, image::Rgb::<u8>([rgb.0, rgb.1, rgb.2]))
                 })
                 .collect(),
         };

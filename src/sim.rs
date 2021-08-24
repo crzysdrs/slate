@@ -12,6 +12,7 @@ use std::sync::mpsc;
 use std::thread;
 
 struct OctSimDisplay {
+    #[allow(unused)]
     child: thread::JoinHandle<()>,
     tx: mpsc::Sender<WindowMessage>,
     color: OctColor,
