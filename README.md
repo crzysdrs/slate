@@ -1,6 +1,6 @@
 # Gameboy Randomized E-paper Image Display
 
-Leveraging a [Gameboy Emulator](github.com/crzysdrs/gb-rs) to generate frames of roms,
+Leveraging a [Gameboy Emulator](https://github.com/crzysdrs/gb-rs) to generate frames of roms,
 this project will take those images, superimpose them on images of gameboys,
 randomly apply image transformations and display them on an e-Paper display, all on a Raspberry Pi.
 

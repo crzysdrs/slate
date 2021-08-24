@@ -13,7 +13,7 @@ TARGET=armv7-unknown-linux-musleabihf # Pi 2/3/4
 PI_NAME=slate
 
 RUSTFLAGS="-C linker=arm-linux-gnueabihf-gcc" \
-         cargo build --no-default-features --features=spi ${RELEASE_FLAG} --target $TARGET
+         cargo build --no-default-features --features="spi,web" ${RELEASE_FLAG} --target $TARGET
 
 # upload binary
 scp -S ssh-ident -r ./target/$TARGET/${RELEASE}/slate assets.toml Rocket.toml ${PI_NAME}:/home/crzysdrs/

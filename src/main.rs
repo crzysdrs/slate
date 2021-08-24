@@ -388,6 +388,6 @@ fn main() -> Result<()> {
             Drawable::draw(&code, display).unwrap();
             Ok(())
         })?;
-        //controller.delay.delay_ms(10_000u32);
+        controller.delay.delay_ms(30 * 60_000u32);
     }
 }
